@@ -134,6 +134,10 @@ output application/json
 		<set-variable value="#[[]]" doc:name="skuResults" doc:id="fb87a06c-9026-4818-a3db-43fb24f36ebd" variableName="skuResults"/>
 		<foreach doc:name="Process Each Inventory Event" doc:id="c1c10a33-2354-47e5-960a-102f7cdb16e6" collection="#[vars.originalRequest.events]">
 			<set-variable value="#[payload]" doc:name="Preserve Current Event" doc:id="28a5664c-55bc-4f93-9928-6da6c4b65b16" variableName="currentEvent"/>
+			<set-variable value="NOT_UPDATED" doc:name="set variable" doc:id="eec5f7a0-54f9-44f1-ae1d-7cacb64ec785" variableName="updateStatus"/>
+			<set-variable value="#[-1]" doc:name="Set Variable" doc:id="1d282129-5aa8-4107-b249-346f2e162a8c" variableName="updatedRows"/>
+			<set-variable value='#[[]&#10;    ++ (if (isEmpty(vars.currentEvent.eventId default "")) ["Missing eventId"] else [])&#10;    ++ (if ((vars.currentEvent.eventVersion default 0) &lt;= 0) ["Invalid eventVersion"] else [])&#10;    ++ (if (isEmpty(vars.currentEvent.sku default "")) ["Missing SKU"] else [])&#10;    ++ (if (isEmpty(vars.currentEvent.locationCode default "")) ["Missing locationCode"] else [])&#10;    ++ (if ((vars.currentEvent.quantityOnHand default -1) &lt; 0) ["Negative on-hand quantity"] else [])&#10;    ++ (if ((vars.currentEvent.reservedQuantity default -1) &lt; 0) ["Negative reserved quantity"] else [])&#10;    ++ (if (&#10;        (vars.currentEvent.quantityOnHand default 0) -&#10;        (vars.currentEvent.reservedQuantity default 0) &lt; 0&#10;    ) ["Available quantity cannot be negative"] else [])&#10;    ++ (if (&#10;        !(["GOODS_RECEIPT", "GOODS_ISSUE", "SALE", "RETURN", "ADJUSTMENT"]&#10;        contains (vars.currentEvent.movementType default ""))&#10;    ) ["Invalid movement type"] else [])&#10;    ++ (if (isEmpty(vars.currentEvent.unitOfMeasure default "")) ["Missing unitOfMeasure"] else [])&#10;    ++ (if (isEmpty(vars.currentEvent.eventTimestamp default "")) ["Missing eventTimestamp"] else [])]' doc:name="Validate Basic Event" doc:id="2e49fbe9-f61d-4ccb-b8d9-11937a69fbd0" variableName="basicErrors"/>
+			<set-variable value="NOT_PROCESSED" doc:name="Initialize Version Status" doc:id="20042215-42e0-4565-8f3f-26966eee60ab" variableName="versionStatus"/>
 			<db:select doc:name="Check Product SKU" doc:id="c6c92a48-a271-4e39-be3a-db0448c85620" config-ref="Database_Config">
 				<db:sql ><![CDATA[SELECT sku, product_name, is_active
 FROM product_master
@@ -165,7 +169,153 @@ WHERE location_code = :locationCode;]]></db:sql>
 					<set-variable value="INACTIVE" doc:name="Set Variable" doc:id="7d95e4b2-87f6-4ac3-80d4-5758c227d0dc" variableName="locationStatus"/>
 				</otherwise>
 			</choice>
-			<set-variable value="#[%dw 2.0&#10;output application/java&#10;---&#10;(vars.skuResults default []) ++ [{&#10;    eventId: vars.currentEvent.eventId,&#10;    sku: vars.currentEvent.sku,&#10;    skuStatus: vars.skuStatus,&#10;    locationCode: vars.currentEvent.locationCode,&#10;    locationStatus: vars.locationStatus&#10;}]]" doc:name="skuResults" doc:id="6e127ce0-b59e-4fa1-8449-c1162c246d0f" variableName="skuResults"/>
+			<choice doc:name="Choice" doc:id="42432666-ec81-4106-84d3-daca47b90000" >
+				<when expression='#[vars.skuStatus == "VALID"&#10;    and vars.locationStatus == "ACTIVE"&#10;    and isEmpty(vars.basicErrors)]'>
+					<db:select doc:name="Check Existing Inventory" doc:id="faf6e19b-9a78-4f71-af0e-e39603178477" config-ref="Database_Config">
+						<db:sql ><![CDATA[SELECT sku,
+       location_code,
+       quantity_on_hand,
+       reserved_quantity,
+       available_quantity,
+       event_version,
+       reorder_point
+FROM inventory_stock
+WHERE sku = :sku
+  AND location_code = :locationCode;]]></db:sql>
+						<db:input-parameters ><![CDATA[#[{
+    sku: vars.currentEvent.sku,
+    locationCode: vars.currentEvent.locationCode
+}]]]></db:input-parameters>
+					</db:select>
+					<set-variable value="	#[payload]" doc:name="Store Existing Stock" doc:id="8f061373-6b80-45c6-b7e2-410b132d44c3" variableName="	existingStock"/>
+					<choice doc:name="Choice" doc:id="f43df341-39c9-407d-ac85-ec89a27d3242" >
+						<when expression="#[!isEmpty(vars.existingStock)]">
+							<choice doc:name="Choice" doc:id="4f440af5-7075-430f-b468-2c387941bb96" >
+								<when expression="#[vars.currentEvent.eventVersion &gt; vars.existingStock[0].event_version]">
+									<set-variable value="NEWER_EVENT" doc:name="Mark New Event" doc:id="16131d03-8a7f-462a-b31a-91acb34f654f" variableName="versionStatus"/>
+									<db:update doc:name="Update Existing Inventory" doc:id="d1a61510-dc60-460e-b540-0b100e523e34" config-ref="Database_Config">
+										<db:sql><![CDATA[UPDATE inventory_stock
+SET
+    quantity_on_hand = :quantityOnHand,
+    reserved_quantity = :reservedQuantity,
+    available_quantity = :availableQuantity,
+    unit_of_measure = :unitOfMeasure,
+    event_version = :newVersion,
+    last_event_id = :eventId,
+    last_event_time = :eventTimestamp,
+    source_system = :sourceSystem,
+    updated_at = CURRENT_TIMESTAMP
+WHERE sku = :sku
+  AND location_code = :locationCode
+  AND event_version = :currentVersion;]]></db:sql>
+										<db:input-parameters><![CDATA[#[{
+    quantityOnHand: vars.currentEvent.quantityOnHand,
+    reservedQuantity: vars.currentEvent.reservedQuantity,
+    availableQuantity:
+    vars.currentEvent.quantityOnHand -
+    vars.currentEvent.reservedQuantity,
+    unitOfMeasure: vars.currentEvent.unitOfMeasure,
+    newVersion: vars.currentEvent.eventVersion,
+    eventId: vars.currentEvent.eventId,
+    eventTimestamp: vars.currentEvent.eventTimestamp as LocalDateTime,
+    sourceSystem: vars.originalRequest.sourceSystem,
+    sku: vars.currentEvent.sku,
+    locationCode: vars.currentEvent.locationCode,
+    currentVersion: vars.existingStock[0].event_version
+}]]]></db:input-parameters>
+									</db:update>
+									<set-variable value='#[payload.affectedRows]' doc:name="Capture Updated Rows" doc:id="375c1a33-f819-4467-b45e-c6d862dbd575" variableName="updatedRows"/>
+									<choice doc:name="Choice" doc:id="20db21f6-6b8f-4c19-960c-cf3e2fbfa330" >
+										<when expression="#[vars.updatedRows == 1]">
+											<set-variable value="NEWER_EVENT" doc:name="Mark Version Success" doc:id="9cc94e0f-46c7-4e39-a52f-1b61d3c5b0f3" variableName="versionStatus" />
+											<set-variable value="UPDATED" doc:name="Mark Update Success" doc:id="75479e4f-01f2-4c72-b222-7d5ec0f6ae2f" variableName="updateStatus"/>
+										</when>
+										<otherwise >
+											<set-variable value="CONFLICT" doc:name="Mark Update Conflict" doc:id="c618c4fe-5426-460d-80ce-ed478c983674" variableName="updateStatus"/>
+											<db:select doc:name="ReRead Latest Inventory" doc:id="b97b6568-d341-43d3-bfa4-cd4351d42fd8" config-ref="Database_Config">
+												<db:sql ><![CDATA[SELECT
+    sku,
+    location_code,
+    quantity_on_hand,
+    reserved_quantity,
+    available_quantity,
+    event_version,
+    reorder_point
+FROM inventory_stock
+WHERE sku = :sku
+  AND location_code = :locationCode;]]></db:sql>
+												<db:input-parameters ><![CDATA[#[{
+    sku: vars.currentEvent.sku,
+    locationCode: vars.currentEvent.locationCode
+}]]]></db:input-parameters>
+											</db:select>
+											<set-variable value="#[payload]" doc:name="Store Latest Inventory" doc:id="d91ed5e5-6b69-40a2-98ac-5739c72c7da3" variableName="latestStock"/>
+											<choice doc:name="Choice" doc:id="755f2419-8615-4765-8b5d-03151e34079b" >
+												<when expression="#[!isEmpty(vars.latestStock) and vars.currentEvent.eventVersion &gt; vars.latestStock[0].event_version]">
+													<db:update doc:name="Retry Inventory Update" doc:id="0d53b487-3e48-4b18-83cf-efd337063cdd" config-ref="Database_Config">
+														<db:sql ><![CDATA[UPDATE inventory_stock
+SET
+    quantity_on_hand = :quantityOnHand,
+    reserved_quantity = :reservedQuantity,
+    available_quantity = :availableQuantity,
+    unit_of_measure = :unitOfMeasure,
+    event_version = :newVersion,
+    last_event_id = :eventId,
+    last_event_time = :eventTimestamp,
+    source_system = :sourceSystem,
+    updated_at = CURRENT_TIMESTAMP
+WHERE sku = :sku
+  AND location_code = :locationCode
+  AND event_version = :currentVersion;]]></db:sql>
+														<db:input-parameters ><![CDATA[#[{
+    quantityOnHand: vars.currentEvent.quantityOnHand,
+    reservedQuantity: vars.currentEvent.reservedQuantity,
+    availableQuantity:
+    vars.currentEvent.quantityOnHand -
+    vars.currentEvent.reservedQuantity,
+    unitOfMeasure: vars.currentEvent.unitOfMeasure,
+    newVersion: vars.currentEvent.eventVersion,
+    eventId: vars.currentEvent.eventId,
+    eventTimestamp: vars.currentEvent.eventTimestamp as LocalDateTime,
+    sourceSystem: vars.originalRequest.sourceSystem,
+    sku: vars.currentEvent.sku,
+    locationCode: vars.currentEvent.locationCode,
+    currentVersion: vars.latestStock[0].event_version
+}]]]></db:input-parameters>
+													</db:update>
+													<set-variable value="#[payload.StatementResult.affectedRows]" doc:name="Capture Retry Rows" doc:id="8348b608-d8ba-462d-8efc-8e453aacf7a3" variableName="retryRows"/>
+													<choice doc:name="Check Retry Result" doc:id="1d10b296-e3f2-4bd3-8c8a-0e301d3f00b8" >
+														<when expression="#[vars.retryRows == 1]">
+															<set-variable value="UPDATED_AFTER_RETRY" doc:name="Mark Retry Success" doc:id="0d8821cf-39db-41fe-a28c-296b7b3cb229" variableName="updateStatus"/>
+														</when>
+														<otherwise >
+															<set-variable value="CONFLICT_UNRESOLVED" doc:name="Mark Retry Unresolved" doc:id="f17d88de-2e87-450a-993e-c032892967a9" variableName="updateStatus"/>
+														</otherwise>
+													</choice>
+												</when>
+												<otherwise >
+													<set-variable value="IGNORED_STALE" doc:name="Mark Stale After Conflict" doc:id="f98591d4-967e-45ed-ba5c-625d0df4a16f" variableName="versionStatus"/>
+													<set-variable value="IGNORED_STALE" doc:name="Mark Conflict Stale" doc:id="57841b0f-8209-45ba-ade8-2b83cceb3828" variableName="updateStatus"/>
+												</otherwise>
+											</choice>
+										</otherwise>
+									</choice>
+								</when>
+								<otherwise >
+									<set-variable value="IGNORED_STALE" doc:name="Set Variable" doc:id="b3702faa-9994-4af4-9604-b08eeb5df6a5" variableName="versionStatus"/>
+								</otherwise>
+							</choice>
+						</when>
+						<otherwise >
+							<set-variable value="NEW_RECORD" doc:name="Mark New Stock" doc:id="f0430830-5602-4ccb-97ef-5405fbfb0248" variableName="versionStatus"/>
+						</otherwise>
+					</choice>
+				</when>
+				<otherwise >
+					<set-variable value="[]" doc:name="Initialize Existing Stock" doc:id="85e9fb6a-7085-4dca-8b10-e5e60c890102" variableName="existingStock"/>
+				</otherwise>
+			</choice>
+			<set-variable value='#[%dw 2.0&#10;output application/java&#10;---&#10;(vars.skuResults default []) ++ [{&#10;    eventId: vars.currentEvent.eventId,&#10;    sku: vars.currentEvent.sku,&#10;    skuStatus: vars.skuStatus,&#10;    locationCode: vars.currentEvent.locationCode,&#10;    locationStatus: vars.locationStatus,&#10;    existingStock: vars.existingStock default [],&#10;    versionStatus: vars.versionStatus,&#10;    updateStatus: vars.updateStatus default "NOT_UPDATED",&#10;    updatedRows: vars.updatedRows default -1&#10;}]]' doc:name="skuResults" doc:id="6e127ce0-b59e-4fa1-8449-c1162c246d0f" variableName="skuResults"/>
 		</foreach>
 		<ee:transform doc:name="Transform Message">
             <ee:message>
@@ -185,6 +335,9 @@ var results = events map (event) -> do {
 
     var skuStatus = skuResult.skuStatus default "UNKNOWN_SKU"
     var locationStatus = skuResult.locationStatus default "INACTIVE"
+    var versionStatus = skuResult.versionStatus default "NOT_PROCESSED"
+    var updateStatus = skuResult.updateStatus default "NOT_UPDATED"
+    var debugUpdateOutput = skuResult.debugUpdateOutput default "NOT_CAPTURED"
 
     var errors = []
         ++ (if (isEmpty(event.eventId default "")) ["Missing eventId"] else [])
@@ -201,6 +354,16 @@ var results = events map (event) -> do {
         ++ (if (skuStatus == "INACTIVE_SKU") ["Inactive SKU"] else [])
         ++ (if (locationStatus == "INACTIVE") ["Inactive or unknown location"] else [])
 
+    var status =
+    if (!isEmpty(errors))
+        "REJECTED"
+    else if (versionStatus == "IGNORED_STALE")
+        "IGNORED_STALE"
+    else if (updateStatus == "UPDATED")
+        "ACCEPTED"
+    else
+        "REJECTED"
+
     ---
     {
         eventId: event.eventId default null,
@@ -209,8 +372,11 @@ var results = events map (event) -> do {
         availableQuantity: available,
         skuStatus: skuStatus,
         locationStatus: locationStatus,
-        valid: isEmpty(errors),
-        status: if (isEmpty(errors)) "ACCEPTED" else "REJECTED",
+        versionStatus: versionStatus,
+        updateStatus: updateStatus,
+        debugUpdateOutput: debugUpdateOutput,
+        valid: status == "ACCEPTED",
+        status: status,
         errors: errors
     }
 }
@@ -221,8 +387,9 @@ var results = events map (event) -> do {
     sourceSystem: vars.originalRequest.sourceSystem,
     correlationId: vars.correlationId,
     processedCount: sizeOf(results),
-    acceptedCount: sizeOf(results filter $.valid),
-    rejectedCount: sizeOf(results filter !$.valid),
+    acceptedCount: sizeOf(results filter ($.status == "ACCEPTED")),
+    staleCount: sizeOf(results filter ($.status == "IGNORED_STALE")),
+    rejectedCount: sizeOf(results filter ($.status == "REJECTED")),
     results: results
 }]]></ee:set-payload>
             </ee:message>
