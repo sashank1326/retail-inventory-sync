@@ -1,0 +1,76 @@
+
+#%RAML 1.0
+title: Retail Inventory Sync API
+version: v1
+baseUri: http://localhost:8081/api/v1
+mediaType: application/json
+
+types:
+  InventoryEvent:
+    type: object
+    properties:
+      eventId:
+        type: string
+        required: true
+      eventVersion:
+        type: integer
+        required: true
+      eventTimestamp:
+        type: string
+        required: true
+      sku:
+        type: string
+        required: true
+      locationCode:
+        type: string
+        required: true
+      movementType:
+        type: string
+        required: true
+      quantityOnHand:
+        type: integer
+        required: true
+      reservedQuantity:
+        type: integer
+        required: true
+      unitOfMeasure:
+        type: string
+        required: true
+      referenceDocument:
+        type: string
+        required: false
+
+  InventoryBatch:
+    type: object
+    properties:
+      sourceSystem:
+        type: string
+        required: true
+      batchId:
+        type: string
+        required: true
+      events:
+        type: InventoryEvent[]
+        minItems: 1
+
+/inventory/events:
+  post:
+    description: Receive single or bulk inventory events
+    body:
+      application/json:
+        type: InventoryBatch
+    responses:
+      200:
+        description: Events processed successfully
+        body:
+          application/json:
+            example:
+              batchId: INV-BATCH-001
+              processedCount: 1
+              acceptedCount: 1
+              staleCount: 0
+              rejectedCount: 0
+      400:
+        description: Invalid request
+      500:
+        description: Internal server error
