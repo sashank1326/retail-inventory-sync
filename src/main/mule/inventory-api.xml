@@ -1,10 +1,14 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<mule xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:apikit="http://www.mulesoft.org/schema/mule/mule-apikit" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core" xmlns:http="http://www.mulesoft.org/schema/mule/http" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd http://www.mulesoft.org/schema/mule/mule-apikit http://www.mulesoft.org/schema/mule/mule-apikit/current/mule-apikit.xsd http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd ">
+<mule xmlns:db="http://www.mulesoft.org/schema/mule/db" xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:apikit="http://www.mulesoft.org/schema/mule/mule-apikit" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core" xmlns:http="http://www.mulesoft.org/schema/mule/http" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd http://www.mulesoft.org/schema/mule/mule-apikit http://www.mulesoft.org/schema/mule/mule-apikit/current/mule-apikit.xsd http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd 
+http://www.mulesoft.org/schema/mule/db http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd">
     <http:listener-config name="inventory-api-httpListenerConfig">
         <http:listener-connection host="0.0.0.0" port="8081" />
     </http:listener-config>
     <apikit:config name="inventory-api-config" api="api/inventory-api.raml" outboundHeadersMapName="outboundHeaders" httpStatusVarName="httpStatus" />
-    <flow name="inventory-api-main">
+    <db:config name="Database_Config" doc:name="Database Config" doc:id="2b13b40a-c51c-4e1a-8244-34a3c79545bd" >
+		<db:generic-connection url="jdbc:mysql://localhost:3306/retail_inventory" driverClassName="com.mysql.cj.jdbc.Driver" user="mule_app" password="sashank26" />
+	</db:config>
+	<flow name="inventory-api-main">
         <http:listener config-ref="inventory-api-httpListenerConfig" path="/api/v1/*" doc:name="Inventory API Listener">
             <http:response statusCode="#[vars.httpStatus default 200]">
                 <http:headers><![CDATA[#[vars.outboundHeaders default {}]]]></http:headers>
@@ -126,16 +130,61 @@ output application/json
     <flow name="post:\inventory\events:application\json:inventory-api-config">
         <set-variable value="#[uuid()]" doc:name="Set Variable" doc:id="2e35c103-d4bd-4fe6-8683-4aed4511c66c" variableName="correlationId"/>
 		<logger level="INFO" doc:name="Log Inventory Request" doc:id="b7cda145-4d72-4a46-818d-36447c6f3752" message="Inventory request received. Correlation ID: #[vars.correlationId]" category="com.cognizant.inventory"/>
+		<set-variable value="	#[payload]" doc:name="Preserve Original Request" doc:id="3aeae90c-b580-4903-9fc8-c986f4e9b8d8" variableName="	originalRequest"/>
+		<set-variable value="#[[]]" doc:name="skuResults" doc:id="fb87a06c-9026-4818-a3db-43fb24f36ebd" variableName="skuResults"/>
+		<foreach doc:name="Process Each Inventory Event" doc:id="c1c10a33-2354-47e5-960a-102f7cdb16e6" collection="#[vars.originalRequest.events]">
+			<set-variable value="#[payload]" doc:name="Preserve Current Event" doc:id="28a5664c-55bc-4f93-9928-6da6c4b65b16" variableName="currentEvent"/>
+			<db:select doc:name="Check Product SKU" doc:id="c6c92a48-a271-4e39-be3a-db0448c85620" config-ref="Database_Config">
+				<db:sql ><![CDATA[SELECT sku, product_name, is_active
+FROM product_master
+WHERE sku = :sku;]]></db:sql>
+				<db:input-parameters ><![CDATA[#[{ sku: vars.currentEvent.sku }]]]></db:input-parameters>
+			</db:select>
+			<choice doc:name="Choice" doc:id="64ba6ba7-3533-4017-a576-14e9759f58fd" >
+				<when expression="#[isEmpty(payload)]">
+					<set-variable value="UNKNOWN_SKU" doc:name="	Reject Unknown SKU" doc:id="d8d09c75-3e13-4213-98a8-7b8b8fa313de" variableName="	skuStatus"/>
+				</when>
+				<otherwise >
+					<set-variable value='#[if (payload[0].is_active == false) "INACTIVE_SKU" else "VALID"]' doc:name="Valid or invalid sku" doc:id="91d3decc-d615-477e-8b32-1b949990c8fd" variableName="	skuStatus"/>
+				</otherwise>
+			</choice>
+			<logger level="INFO" doc:name="Log SKU Validation Result" doc:id="73b20f53-6390-49bd-9585-a426e690bb53" message="SKU: #[vars.currentEvent.sku] - Status: #[vars.skuStatus]"/>
+			<db:select doc:name="Check Location" doc:id="ae4174ff-aab9-4201-90ea-80c6ec5e6544" config-ref="Database_Config">
+				<db:sql ><![CDATA[SELECT location_code, is_active
+FROM location_master
+WHERE location_code = :locationCode;]]></db:sql>
+				<db:input-parameters ><![CDATA[#[{
+    locationCode: vars.currentEvent.locationCode
+}]]]></db:input-parameters>
+			</db:select>
+			<choice doc:name="Choice" doc:id="606baf46-1304-48e6-8687-6f44360dcc48" >
+				<when expression="#[!isEmpty(payload) and payload[0].is_active == true]">
+					<set-variable value="ACTIVE" doc:name="Set Variable" doc:id="367088d1-6b97-40ba-ad41-30b6f7fbc227" variableName="locationStatus"/>
+				</when>
+				<otherwise >
+					<set-variable value="INACTIVE" doc:name="Set Variable" doc:id="7d95e4b2-87f6-4ac3-80d4-5758c227d0dc" variableName="locationStatus"/>
+				</otherwise>
+			</choice>
+			<set-variable value="#[%dw 2.0&#10;output application/java&#10;---&#10;(vars.skuResults default []) ++ [{&#10;    eventId: vars.currentEvent.eventId,&#10;    sku: vars.currentEvent.sku,&#10;    skuStatus: vars.skuStatus,&#10;    locationCode: vars.currentEvent.locationCode,&#10;    locationStatus: vars.locationStatus&#10;}]]" doc:name="skuResults" doc:id="6e127ce0-b59e-4fa1-8449-c1162c246d0f" variableName="skuResults"/>
+		</foreach>
 		<ee:transform doc:name="Transform Message">
             <ee:message>
                 <ee:set-payload><![CDATA[%dw 2.0
 output application/json
 
-var events = payload.events default []
+var events = vars.originalRequest.events default []
+var skuResults = vars.skuResults default []
 
 var results = events map (event) -> do {
     var available = (event.quantityOnHand default 0)
                     - (event.reservedQuantity default 0)
+
+    var skuResult = (skuResults filter ((item) ->
+        item.eventId == event.eventId
+    ))[0] default {}
+
+    var skuStatus = skuResult.skuStatus default "UNKNOWN_SKU"
+    var locationStatus = skuResult.locationStatus default "INACTIVE"
 
     var errors = []
         ++ (if (isEmpty(event.eventId default "")) ["Missing eventId"] else [])
@@ -145,8 +194,12 @@ var results = events map (event) -> do {
         ++ (if ((event.quantityOnHand default -1) < 0) ["Negative on-hand quantity"] else [])
         ++ (if ((event.reservedQuantity default -1) < 0) ["Negative reserved quantity"] else [])
         ++ (if (available < 0) ["Available quantity cannot be negative"] else [])
-        ++ (if (isEmpty(["RECEIPT", "SALE", "ADJUSTMENT", "RETURN"] filter ($ == (event.movementType default "")))) ["Invalid movement type"] else [])
+        ++ (if (!(["GOODS_RECEIPT", "GOODS_ISSUE", "SALE", "RETURN", "ADJUSTMENT"] contains (event.movementType default ""))) ["Invalid movement type"] else [])
         ++ (if (isEmpty(event.unitOfMeasure default "")) ["Missing unitOfMeasure"] else [])
+        ++ (if (isEmpty(event.eventTimestamp default "")) ["Missing eventTimestamp"] else [])
+        ++ (if (skuStatus == "UNKNOWN_SKU") ["Unknown SKU"] else [])
+        ++ (if (skuStatus == "INACTIVE_SKU") ["Inactive SKU"] else [])
+        ++ (if (locationStatus == "INACTIVE") ["Inactive or unknown location"] else [])
 
     ---
     {
@@ -154,18 +207,21 @@ var results = events map (event) -> do {
         sku: event.sku default null,
         locationCode: event.locationCode default null,
         availableQuantity: available,
+        skuStatus: skuStatus,
+        locationStatus: locationStatus,
         valid: isEmpty(errors),
+        status: if (isEmpty(errors)) "ACCEPTED" else "REJECTED",
         errors: errors
     }
 }
 
 ---
 {
-    batchId: payload.batchId,
-    sourceSystem: payload.sourceSystem,
+    batchId: vars.originalRequest.batchId,
+    sourceSystem: vars.originalRequest.sourceSystem,
     correlationId: vars.correlationId,
-    totalEvents: sizeOf(events),
-    validCount: sizeOf(results filter $.valid),
+    processedCount: sizeOf(results),
+    acceptedCount: sizeOf(results filter $.valid),
     rejectedCount: sizeOf(results filter !$.valid),
     results: results
 }]]></ee:set-payload>
