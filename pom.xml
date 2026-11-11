@@ -71,6 +71,12 @@
 			<artifactId>mysql-connector-j</artifactId>
 			<version>9.1.0</version>
 		</dependency>
+		<dependency>
+			<groupId>com.mulesoft.connectors</groupId>
+			<artifactId>mule-amqp-connector</artifactId>
+			<version>1.9.6</version>
+			<classifier>mule-plugin</classifier>
+		</dependency>
 	</dependencies>
 
 	<repositories>

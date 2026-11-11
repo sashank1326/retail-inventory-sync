@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<mule xmlns:db="http://www.mulesoft.org/schema/mule/db" xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:apikit="http://www.mulesoft.org/schema/mule/mule-apikit" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core" xmlns:http="http://www.mulesoft.org/schema/mule/http" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd http://www.mulesoft.org/schema/mule/mule-apikit http://www.mulesoft.org/schema/mule/mule-apikit/current/mule-apikit.xsd http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd 
-http://www.mulesoft.org/schema/mule/db http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd">
+<mule xmlns:amqp="http://www.mulesoft.org/schema/mule/amqp" xmlns:db="http://www.mulesoft.org/schema/mule/db" xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:apikit="http://www.mulesoft.org/schema/mule/mule-apikit" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core" xmlns:http="http://www.mulesoft.org/schema/mule/http" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd http://www.mulesoft.org/schema/mule/mule-apikit http://www.mulesoft.org/schema/mule/mule-apikit/current/mule-apikit.xsd http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd 
+http://www.mulesoft.org/schema/mule/db http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd
+http://www.mulesoft.org/schema/mule/amqp http://www.mulesoft.org/schema/mule/amqp/current/mule-amqp.xsd">
     <http:listener-config name="inventory-api-httpListenerConfig">
         <http:listener-connection host="0.0.0.0" port="8081" />
     </http:listener-config>
@@ -8,6 +9,9 @@ http://www.mulesoft.org/schema/mule/db http://www.mulesoft.org/schema/mule/db/cu
     <db:config name="Database_Config" doc:name="Database Config" doc:id="2b13b40a-c51c-4e1a-8244-34a3c79545bd" >
 		<db:generic-connection url="jdbc:mysql://localhost:3306/retail_inventory" driverClassName="com.mysql.cj.jdbc.Driver" user="mule_app" password="sashank26" />
 	</db:config>
+	<amqp:config name="AMQP_Config" doc:name="AMQP Config" doc:id="b2e13e81-670f-4ba1-9364-74ec161c3820" >
+		<amqp:connection host="localhost" port="5672" username="retailuser" password="RetailLocal@2026!" />
+	</amqp:config>
 	<flow name="inventory-api-main">
         <http:listener config-ref="inventory-api-httpListenerConfig" path="/api/v1/*" doc:name="Inventory API Listener">
             <http:response statusCode="#[vars.httpStatus default 200]">
@@ -100,7 +104,14 @@ output application/json
             </on-error-propagate>
         </error-handler>
     </flow>
-    <flow name="inventory-api-console">
+    <flow name="warehouse-inventory-consumer-flow" doc:id="ad73e783-1ac4-4f46-837f-dd610c63b86f" >
+		<amqp:listener doc:name="Listener" doc:id="f68af73f-6e82-49c5-82ff-ae613dada477" config-ref="AMQP_Config" queueName="warehouse.inventory.queue" ackMode="MANUAL" numberOfConsumers="1" inboundEncoding="UTF-8" inboundContentType="application/json">
+			<amqp:listener-quality-of-service-config prefetchSize="0" prefetchCount="10" />
+		</amqp:listener>
+		<logger level="INFO" doc:name="Log Warehouse Inventory Event" doc:id="2f775e46-8540-480e-9486-fb5725d2d9d7" message='#["Warehouse received inventory event: " ++ write(payload, "application/json")]' category="com.retail.inventory.warehouse"/>
+		<amqp:ack doc:name="Ack_Warehouse_Message" doc:id="ef1f0679-24b5-4588-b2b1-7224fb5aab45" ackId="#[attributes.ackId]"/>
+	</flow>
+	<flow name="inventory-api-console">
         <http:listener config-ref="inventory-api-httpListenerConfig" path="/console/*">
             <http:response statusCode="#[vars.httpStatus default 200]">
                 <http:headers>#[vars.outboundHeaders default {}]</http:headers>
@@ -127,62 +138,62 @@ output application/json
             </on-error-propagate>
         </error-handler>
     </flow>
-    <flow name="post:\inventory\events:application\json:inventory-api-config">
-        <set-variable value="#[uuid()]" doc:name="Set Variable" doc:id="2e35c103-d4bd-4fe6-8683-4aed4511c66c" variableName="correlationId"/>
-		<logger level="INFO" doc:name="Log Inventory Request" doc:id="b7cda145-4d72-4a46-818d-36447c6f3752" message="Inventory request received. Correlation ID: #[vars.correlationId]" category="com.cognizant.inventory"/>
-		<set-variable value="	#[payload]" doc:name="Preserve Original Request" doc:id="3aeae90c-b580-4903-9fc8-c986f4e9b8d8" variableName="	originalRequest"/>
-		<set-variable value="#[[]]" doc:name="skuResults" doc:id="fb87a06c-9026-4818-a3db-43fb24f36ebd" variableName="skuResults"/>
+	<flow name="post:\inventory\events:application\json:inventory-api-config">
+        <set-variable value="#[uuid()]" doc:name="Set Variable" doc:id="2e35c103-d4bd-4fe6-8683-4aed4511c66c" variableName="correlationId" />
+		<logger level="INFO" doc:name="Log Inventory Request" doc:id="b7cda145-4d72-4a46-818d-36447c6f3752" message="Inventory request received. Correlation ID: #[vars.correlationId]" category="com.cognizant.inventory" />
+		<set-variable value="	#[payload]" doc:name="Preserve Original Request" doc:id="3aeae90c-b580-4903-9fc8-c986f4e9b8d8" variableName="	originalRequest" />
+		<set-variable value="#[[]]" doc:name="skuResults" doc:id="fb87a06c-9026-4818-a3db-43fb24f36ebd" variableName="skuResults" />
 		<foreach doc:name="Process Each Inventory Event" doc:id="c1c10a33-2354-47e5-960a-102f7cdb16e6" collection="#[vars.originalRequest.events]">
-			<set-variable value="#[payload]" doc:name="Preserve Current Event" doc:id="28a5664c-55bc-4f93-9928-6da6c4b65b16" variableName="currentEvent"/>
-			<set-variable value="NOT_UPDATED" doc:name="set variable" doc:id="eec5f7a0-54f9-44f1-ae1d-7cacb64ec785" variableName="updateStatus"/>
-			<set-variable value="#[-1]" doc:name="Set Variable" doc:id="1d282129-5aa8-4107-b249-346f2e162a8c" variableName="updatedRows"/>
-			<set-variable value='#[[]&#10;    ++ (if (isEmpty(vars.currentEvent.eventId default "")) ["Missing eventId"] else [])&#10;    ++ (if ((vars.currentEvent.eventVersion default 0) &lt;= 0) ["Invalid eventVersion"] else [])&#10;    ++ (if (isEmpty(vars.currentEvent.sku default "")) ["Missing SKU"] else [])&#10;    ++ (if (isEmpty(vars.currentEvent.locationCode default "")) ["Missing locationCode"] else [])&#10;    ++ (if ((vars.currentEvent.quantityOnHand default -1) &lt; 0) ["Negative on-hand quantity"] else [])&#10;    ++ (if ((vars.currentEvent.reservedQuantity default -1) &lt; 0) ["Negative reserved quantity"] else [])&#10;    ++ (if (&#10;        (vars.currentEvent.quantityOnHand default 0) -&#10;        (vars.currentEvent.reservedQuantity default 0) &lt; 0&#10;    ) ["Available quantity cannot be negative"] else [])&#10;    ++ (if (&#10;        !(["GOODS_RECEIPT", "GOODS_ISSUE", "SALE", "RETURN", "ADJUSTMENT"]&#10;        contains (vars.currentEvent.movementType default ""))&#10;    ) ["Invalid movement type"] else [])&#10;    ++ (if (isEmpty(vars.currentEvent.unitOfMeasure default "")) ["Missing unitOfMeasure"] else [])&#10;    ++ (if (isEmpty(vars.currentEvent.eventTimestamp default "")) ["Missing eventTimestamp"] else [])]' doc:name="Validate Basic Event" doc:id="2e49fbe9-f61d-4ccb-b8d9-11937a69fbd0" variableName="basicErrors"/>
-			<set-variable value="NOT_PROCESSED" doc:name="Initialize Version Status" doc:id="20042215-42e0-4565-8f3f-26966eee60ab" variableName="versionStatus"/>
+			<set-variable value="#[payload]" doc:name="Preserve Current Event" doc:id="28a5664c-55bc-4f93-9928-6da6c4b65b16" variableName="currentEvent" />
+			<set-variable value="NOT_UPDATED" doc:name="set variable" doc:id="eec5f7a0-54f9-44f1-ae1d-7cacb64ec785" variableName="updateStatus" />
+			<set-variable value="#[-1]" doc:name="Set Variable" doc:id="1d282129-5aa8-4107-b249-346f2e162a8c" variableName="updatedRows" />
+			<set-variable value='#[[]&#10;    ++ (if (isEmpty(vars.currentEvent.eventId default "")) ["Missing eventId"] else [])&#10;    ++ (if ((vars.currentEvent.eventVersion default 0) &lt;= 0) ["Invalid eventVersion"] else [])&#10;    ++ (if (isEmpty(vars.currentEvent.sku default "")) ["Missing SKU"] else [])&#10;    ++ (if (isEmpty(vars.currentEvent.locationCode default "")) ["Missing locationCode"] else [])&#10;    ++ (if ((vars.currentEvent.quantityOnHand default -1) &lt; 0) ["Negative on-hand quantity"] else [])&#10;    ++ (if ((vars.currentEvent.reservedQuantity default -1) &lt; 0) ["Negative reserved quantity"] else [])&#10;    ++ (if (&#10;        (vars.currentEvent.quantityOnHand default 0) -&#10;        (vars.currentEvent.reservedQuantity default 0) &lt; 0&#10;    ) ["Available quantity cannot be negative"] else [])&#10;    ++ (if (&#10;        !(["GOODS_RECEIPT", "GOODS_ISSUE", "SALE", "RETURN", "ADJUSTMENT"]&#10;        contains (vars.currentEvent.movementType default ""))&#10;    ) ["Invalid movement type"] else [])&#10;    ++ (if (isEmpty(vars.currentEvent.unitOfMeasure default "")) ["Missing unitOfMeasure"] else [])&#10;    ++ (if (isEmpty(vars.currentEvent.eventTimestamp default "")) ["Missing eventTimestamp"] else [])]' doc:name="Validate Basic Event" doc:id="2e49fbe9-f61d-4ccb-b8d9-11937a69fbd0" variableName="basicErrors" />
+			<set-variable value="NOT_PROCESSED" doc:name="Initialize Version Status" doc:id="20042215-42e0-4565-8f3f-26966eee60ab" variableName="versionStatus" />
 			<db:select doc:name="Check Product SKU" doc:id="c6c92a48-a271-4e39-be3a-db0448c85620" config-ref="Database_Config">
-				<db:sql ><![CDATA[SELECT sku, product_name, is_active
+				<db:sql><![CDATA[SELECT sku, product_name, is_active
 FROM product_master
 WHERE sku = :sku;]]></db:sql>
-				<db:input-parameters ><![CDATA[#[{ sku: vars.currentEvent.sku }]]]></db:input-parameters>
+				<db:input-parameters><![CDATA[#[{ sku: vars.currentEvent.sku }]]]></db:input-parameters>
 			</db:select>
-			<choice doc:name="Choice" doc:id="64ba6ba7-3533-4017-a576-14e9759f58fd" >
+			<choice doc:name="Choice" doc:id="64ba6ba7-3533-4017-a576-14e9759f58fd">
 				<when expression="#[isEmpty(payload)]">
-					<set-variable value="UNKNOWN_SKU" doc:name="	Reject Unknown SKU" doc:id="d8d09c75-3e13-4213-98a8-7b8b8fa313de" variableName="	skuStatus"/>
+					<set-variable value="UNKNOWN_SKU" doc:name="	Reject Unknown SKU" doc:id="d8d09c75-3e13-4213-98a8-7b8b8fa313de" variableName="	skuStatus" />
 				</when>
-				<otherwise >
-					<set-variable value='#[if (payload[0].is_active == false) "INACTIVE_SKU" else "VALID"]' doc:name="Valid or invalid sku" doc:id="91d3decc-d615-477e-8b32-1b949990c8fd" variableName="	skuStatus"/>
+				<otherwise>
+					<set-variable value='#[if (payload[0].is_active == false) "INACTIVE_SKU" else "VALID"]' doc:name="Valid or invalid sku" doc:id="91d3decc-d615-477e-8b32-1b949990c8fd" variableName="	skuStatus" />
 				</otherwise>
 			</choice>
-			<logger level="INFO" doc:name="Log SKU Validation Result" doc:id="73b20f53-6390-49bd-9585-a426e690bb53" message="SKU: #[vars.currentEvent.sku] - Status: #[vars.skuStatus]"/>
+			<logger level="INFO" doc:name="Log SKU Validation Result" doc:id="73b20f53-6390-49bd-9585-a426e690bb53" message="SKU: #[vars.currentEvent.sku] - Status: #[vars.skuStatus]" />
 			<db:select doc:name="Check Location" doc:id="ae4174ff-aab9-4201-90ea-80c6ec5e6544" config-ref="Database_Config">
-				<db:sql ><![CDATA[SELECT location_code, is_active
+				<db:sql><![CDATA[SELECT location_code, is_active
 FROM location_master
 WHERE location_code = :locationCode;]]></db:sql>
-				<db:input-parameters ><![CDATA[#[{
+				<db:input-parameters><![CDATA[#[{
     locationCode: vars.currentEvent.locationCode
 }]]]></db:input-parameters>
 			</db:select>
-			<choice doc:name="Choice" doc:id="606baf46-1304-48e6-8687-6f44360dcc48" >
+			<choice doc:name="Choice" doc:id="606baf46-1304-48e6-8687-6f44360dcc48">
 				<when expression="#[!isEmpty(payload) and payload[0].is_active == true]">
-					<set-variable value="ACTIVE" doc:name="Set Variable" doc:id="367088d1-6b97-40ba-ad41-30b6f7fbc227" variableName="locationStatus"/>
+					<set-variable value="ACTIVE" doc:name="Set Variable" doc:id="367088d1-6b97-40ba-ad41-30b6f7fbc227" variableName="locationStatus" />
 				</when>
-				<otherwise >
-					<set-variable value="INACTIVE" doc:name="Set Variable" doc:id="7d95e4b2-87f6-4ac3-80d4-5758c227d0dc" variableName="locationStatus"/>
+				<otherwise>
+					<set-variable value="INACTIVE" doc:name="Set Variable" doc:id="7d95e4b2-87f6-4ac3-80d4-5758c227d0dc" variableName="locationStatus" />
 				</otherwise>
 			</choice>
-			<choice doc:name="Choice" doc:id="42432666-ec81-4106-84d3-daca47b90000" >
+			<choice doc:name="Choice" doc:id="42432666-ec81-4106-84d3-daca47b90000">
 				<when expression='#[vars.skuStatus == "VALID"&#10;    and vars.locationStatus == "ACTIVE"&#10;    and isEmpty(vars.basicErrors)]'>
 					<db:select doc:name="Check Duplicate Event ID" doc:id="187923f6-b324-4e80-8b99-12cbb91cfd4b" config-ref="Database_Config">
-						<db:sql ><![CDATA[SELECT event_id
+						<db:sql><![CDATA[SELECT event_id
 FROM inventory_movements
 WHERE event_id = :eventId;]]></db:sql>
-						<db:input-parameters ><![CDATA[#[{
+						<db:input-parameters><![CDATA[#[{
     eventId: vars.currentEvent.eventId
 }]]]></db:input-parameters>
 					</db:select>
 					<choice doc:name="Is Duplicate Event?" doc:id="18b4c926-e96f-4e7b-9c6b-e082a3d4d4e4">
 						<when expression="#[!isEmpty(payload)]">
-							<set-variable value="IGNORED_DUPLICATE" doc:name="setvariable" doc:id="64633875-a4ed-433b-a82b-84ee7fa0d645" variableName="versionStatus"/>
-							<set-variable value="IGNORED_DUPLICATE" doc:name="Set Variable" doc:id="bf3caa7c-34e3-4358-b38c-48ee7baf561b" variableName="updateStatus"/>
+							<set-variable value="IGNORED_DUPLICATE" doc:name="setvariable" doc:id="64633875-a4ed-433b-a82b-84ee7fa0d645" variableName="versionStatus" />
+							<set-variable value="IGNORED_DUPLICATE" doc:name="Set Variable" doc:id="bf3caa7c-34e3-4358-b38c-48ee7baf561b" variableName="updateStatus" />
 						</when>
 						<otherwise>
 							<db:select doc:name="Check Existing Inventory" doc:id="faf6e19b-9a78-4f71-af0e-e39603178477" config-ref="Database_Config">
@@ -380,14 +391,14 @@ VALUES (
 						</otherwise>
 					</choice>
 				</when>
-				<otherwise >
-					<set-variable value="[]" doc:name="Initialize Existing Stock" doc:id="85e9fb6a-7085-4dca-8b10-e5e60c890102" variableName="existingStock"/>
+				<otherwise>
+					<set-variable value="[]" doc:name="Initialize Existing Stock" doc:id="85e9fb6a-7085-4dca-8b10-e5e60c890102" variableName="existingStock" />
 				</otherwise>
 			</choice>
-			<choice doc:name="Check Successful Inventory Processing" doc:id="d7d2a162-9311-4fd2-874c-d498d61669eb" >
+			<choice doc:name="Check Successful Inventory Processing" doc:id="d7d2a162-9311-4fd2-874c-d498d61669eb">
 				<when expression='#[vars.updateStatus == "UPDATED"&#10;    or vars.updateStatus == "UPDATED_AFTER_RETRY"&#10;    or vars.updateStatus == "INSERTED"]'>
 					<db:insert doc:name="Insert Inventory Movement" doc:id="e5fe4c3d-e7db-42c1-b89a-ecc60faec237" config-ref="Database_Config">
-						<db:sql ><![CDATA[INSERT INTO inventory_movements (
+						<db:sql><![CDATA[INSERT INTO inventory_movements (
     event_id,
     sku,
     location_code,
@@ -411,7 +422,7 @@ VALUES (
     :eventVersion,
     :correlationId
 );]]></db:sql>
-						<db:input-parameters ><![CDATA[#[{
+						<db:input-parameters><![CDATA[#[{
     eventId: vars.currentEvent.eventId,
     sku: vars.currentEvent.sku,
     locationCode: vars.currentEvent.locationCode,
@@ -439,9 +450,22 @@ VALUES (
 					</db:insert>
 				</when>
 			</choice>
-			<set-variable value='#[%dw 2.0&#10;output application/java&#10;---&#10;if (&#10;    vars.updateStatus == "UPDATED" or&#10;    vars.updateStatus == "UPDATED_AFTER_RETRY" or&#10;    vars.updateStatus == "INSERTED"&#10;)&#10;    if (&#10;        (vars.currentEvent.quantityOnHand -&#10;         vars.currentEvent.reservedQuantity)&#10;        &lt;=&#10;        (vars.currentEvent.reorderPoint default 0)&#10;    )&#10;        "LOW_STOCK"&#10;    else&#10;        "NORMAL"&#10;else&#10;    "NOT_EVALUATED"]' doc:name="Calculate Low Stock" doc:id="587b26c4-55f2-4537-9d13-bed074045754" variableName="lowStockStatus"/>
-			<set-variable value='#[%dw 2.0&#10;output application/java&#10;---&#10;(vars.skuResults default []) ++ [{&#10;    eventId: vars.currentEvent.eventId,&#10;    sku: vars.currentEvent.sku,&#10;    skuStatus: vars.skuStatus,&#10;    locationCode: vars.currentEvent.locationCode,&#10;    locationStatus: vars.locationStatus,&#10;    existingStock: vars.existingStock default [],&#10;    versionStatus: vars.versionStatus,&#10;    updateStatus: vars.updateStatus default "NOT_UPDATED",&#10;    updatedRows: vars.updatedRows default -1,&#10;    lowStockStatus: vars.lowStockStatus&#10;}]]' doc:name="skuResults" doc:id="6e127ce0-b59e-4fa1-8449-c1162c246d0f" variableName="skuResults"/>
+			<set-variable value='#[%dw 2.0&#10;output application/java&#10;---&#10;if (&#10;    vars.updateStatus == "UPDATED" or&#10;    vars.updateStatus == "UPDATED_AFTER_RETRY" or&#10;    vars.updateStatus == "INSERTED"&#10;)&#10;    if (&#10;        (vars.currentEvent.quantityOnHand -&#10;         vars.currentEvent.reservedQuantity)&#10;        &lt;=&#10;        (vars.currentEvent.reorderPoint default 0)&#10;    )&#10;        "LOW_STOCK"&#10;    else&#10;        "NORMAL"&#10;else&#10;    "NOT_EVALUATED"]' doc:name="Calculate Low Stock" doc:id="587b26c4-55f2-4537-9d13-bed074045754" variableName="lowStockStatus" />
+			<set-variable value='#[%dw 2.0&#10;output application/java&#10;---&#10;(vars.skuResults default []) ++ [{&#10;    eventId: vars.currentEvent.eventId,&#10;    sku: vars.currentEvent.sku,&#10;    skuStatus: vars.skuStatus,&#10;    locationCode: vars.currentEvent.locationCode,&#10;    locationStatus: vars.locationStatus,&#10;    existingStock: vars.existingStock default [],&#10;    versionStatus: vars.versionStatus,&#10;    updateStatus: vars.updateStatus default "NOT_UPDATED",&#10;    updatedRows: vars.updatedRows default -1,&#10;    lowStockStatus: vars.lowStockStatus,&#10;    quantityOnHand: vars.currentEvent.quantityOnHand,&#10;    reservedQuantity: vars.currentEvent.reservedQuantity,&#10;    eventVersion: vars.currentEvent.eventVersion,&#10;    movementType: vars.currentEvent.movementType,&#10;    unitOfMeasure: vars.currentEvent.unitOfMeasure,&#10;    eventTimestamp: vars.currentEvent.eventTimestamp,&#10;    sourceSystem: vars.originalRequest.sourceSystem,&#10;    referenceDoc: vars.currentEvent.referenceDoc default null&#10;}]]' doc:name="skuResults" doc:id="6e127ce0-b59e-4fa1-8449-c1162c246d0f" variableName="skuResults" />
 		</foreach>
+		<amqp:publish doc:name="RabbitMQ_Config" doc:id="1ecbb0d2-40a6-4610-82a9-4b565fc2828f" config-ref="AMQP_Config" exchangeName="inventory.events" deliveryMode="PERSISTENT" sendCorrelationId="ALWAYS" routingKeys='#[["inventory.changed"]]'>
+			<amqp:message>
+				<amqp:body><![CDATA[#[%dw 2.0
+output application/json
+---
+(vars.skuResults default [])
+    filter (
+        $.updateStatus == "UPDATED"
+        or $.updateStatus == "UPDATED_AFTER_RETRY"
+        or $.updateStatus == "INSERTED"
+    )]]]></amqp:body>
+			</amqp:message>
+		</amqp:publish>
 		<ee:transform doc:name="Transform Message">
             <ee:message>
                 <ee:set-payload><![CDATA[
