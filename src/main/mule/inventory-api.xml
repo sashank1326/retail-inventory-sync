@@ -283,10 +283,11 @@ WHERE sku = :sku
     currentVersion: vars.latestStock[0].event_version
 }]]]></db:input-parameters>
 													</db:update>
-													<set-variable value="#[payload.StatementResult.affectedRows]" doc:name="Capture Retry Rows" doc:id="8348b608-d8ba-462d-8efc-8e453aacf7a3" variableName="retryRows"/>
+													<set-variable value="#[payload.affectedRows]" doc:name="Capture Retry Rows" doc:id="8348b608-d8ba-462d-8efc-8e453aacf7a3" variableName="retryRows"/>
 													<choice doc:name="Check Retry Result" doc:id="1d10b296-e3f2-4bd3-8c8a-0e301d3f00b8" >
 														<when expression="#[vars.retryRows == 1]">
 															<set-variable value="UPDATED_AFTER_RETRY" doc:name="Mark Retry Success" doc:id="0d8821cf-39db-41fe-a28c-296b7b3cb229" variableName="updateStatus"/>
+															<set-variable value="NEWER_EVENT" doc:name="Mark Retry Version" doc:id="7c7623dd-5f0c-41f2-b160-dd22218f96ce" variableName="versionStatus"/>
 														</when>
 														<otherwise >
 															<set-variable value="CONFLICT_UNRESOLVED" doc:name="Mark Retry Unresolved" doc:id="f17d88de-2e87-450a-993e-c032892967a9" variableName="updateStatus"/>
@@ -308,12 +309,119 @@ WHERE sku = :sku
 						</when>
 						<otherwise >
 							<set-variable value="NEW_RECORD" doc:name="Mark New Stock" doc:id="f0430830-5602-4ccb-97ef-5405fbfb0248" variableName="versionStatus"/>
+							<db:insert doc:name="Insert New Records" doc:id="9348fc62-5fbb-4829-a1f3-bf3dc794055a" config-ref="Database_Config">
+								<db:sql ><![CDATA[INSERT INTO inventory_stock (
+    sku,
+    location_code,
+    quantity_on_hand,
+    reserved_quantity,
+    available_quantity,
+    unit_of_measure,
+    reorder_point,
+    event_version,
+    last_event_id,
+    last_event_time,
+    source_system
+)
+VALUES (
+    :sku,
+    :locationCode,
+    :quantityOnHand,
+    :reservedQuantity,
+    :availableQuantity,
+    :unitOfMeasure,
+    :reorderPoint,
+    :eventVersion,
+    :eventId,
+    :eventTimestamp,
+    :sourceSystem
+);]]></db:sql>
+								<db:input-parameters ><![CDATA[#[{
+    sku: vars.currentEvent.sku,
+    locationCode: vars.currentEvent.locationCode,
+    quantityOnHand: vars.currentEvent.quantityOnHand,
+    reservedQuantity: vars.currentEvent.reservedQuantity,
+    availableQuantity:
+        vars.currentEvent.quantityOnHand -
+        vars.currentEvent.reservedQuantity,
+    unitOfMeasure: vars.currentEvent.unitOfMeasure,
+    reorderPoint: vars.currentEvent.reorderPoint default null,
+    eventVersion: vars.currentEvent.eventVersion,
+    eventId: vars.currentEvent.eventId,
+    eventTimestamp: vars.currentEvent.eventTimestamp as LocalDateTime,
+    sourceSystem: vars.originalRequest.sourceSystem
+}]]]></db:input-parameters>
+							</db:insert>
+							<set-variable value="#[payload.affectedRows]" doc:name="Capture Insert Rows" doc:id="6f7241c7-bf50-47e1-900f-d6d3fcc046a1" variableName="insertRows"/>
+							<choice doc:name="Choice" doc:id="e1d3f3c4-b5c0-4e11-b681-678d6be9906d" >
+								<when expression="#[vars.insertRows == 1]">
+									<set-variable value="INSERTED" doc:name="Set Variable" doc:id="b31feab5-dc08-47aa-a359-99e1bfc60804" variableName="updateStatus"/>
+								</when>
+								<otherwise >
+									<set-variable value="INSERT_FAILED" doc:name="Set Variable" doc:id="714419f7-b56d-424a-9a4b-a8d1563355db" variableName="updateStatus"/>
+								</otherwise>
+							</choice>
 						</otherwise>
 					</choice>
 				</when>
 				<otherwise >
 					<set-variable value="[]" doc:name="Initialize Existing Stock" doc:id="85e9fb6a-7085-4dca-8b10-e5e60c890102" variableName="existingStock"/>
 				</otherwise>
+			</choice>
+			<choice doc:name="Check Successful Inventory Processing" doc:id="d7d2a162-9311-4fd2-874c-d498d61669eb" >
+				<when expression='#[vars.updateStatus == "UPDATED"&#10;    or vars.updateStatus == "UPDATED_AFTER_RETRY"&#10;    or vars.updateStatus == "INSERTED"]'>
+					<db:insert doc:name="Insert Inventory Movement" doc:id="e5fe4c3d-e7db-42c1-b89a-ecc60faec237" config-ref="Database_Config">
+						<db:sql ><![CDATA[INSERT INTO inventory_movements (
+    event_id,
+    sku,
+    location_code,
+    movement_type,
+    previous_qty,
+    new_qty,
+    delta_qty,
+    reference_doc,
+    event_version,
+    correlation_id
+)
+VALUES (
+    :eventId,
+    :sku,
+    :locationCode,
+    :movementType,
+    :previousQty,
+    :newQty,
+    :deltaQty,
+    :referenceDoc,
+    :eventVersion,
+    :correlationId
+);]]></db:sql>
+						<db:input-parameters ><![CDATA[#[{
+    eventId: vars.currentEvent.eventId,
+    sku: vars.currentEvent.sku,
+    locationCode: vars.currentEvent.locationCode,
+    movementType: vars.currentEvent.movementType,
+
+    previousQty:
+        if (vars.updateStatus == "INSERTED")
+            0
+        else
+            vars.existingStock[0].quantity_on_hand,
+
+    newQty: vars.currentEvent.quantityOnHand,
+
+    deltaQty:
+        if (vars.updateStatus == "INSERTED")
+            vars.currentEvent.quantityOnHand
+        else
+            vars.currentEvent.quantityOnHand -
+            vars.existingStock[0].quantity_on_hand,
+
+    referenceDoc: vars.currentEvent.referenceDoc default null,
+    eventVersion: vars.currentEvent.eventVersion,
+    correlationId: vars.correlationId
+}]]]></db:input-parameters>
+					</db:insert>
+				</when>
 			</choice>
 			<set-variable value='#[%dw 2.0&#10;output application/java&#10;---&#10;(vars.skuResults default []) ++ [{&#10;    eventId: vars.currentEvent.eventId,&#10;    sku: vars.currentEvent.sku,&#10;    skuStatus: vars.skuStatus,&#10;    locationCode: vars.currentEvent.locationCode,&#10;    locationStatus: vars.locationStatus,&#10;    existingStock: vars.existingStock default [],&#10;    versionStatus: vars.versionStatus,&#10;    updateStatus: vars.updateStatus default "NOT_UPDATED",&#10;    updatedRows: vars.updatedRows default -1&#10;}]]' doc:name="skuResults" doc:id="6e127ce0-b59e-4fa1-8449-c1162c246d0f" variableName="skuResults"/>
 		</foreach>
@@ -337,7 +445,7 @@ var results = events map (event) -> do {
     var locationStatus = skuResult.locationStatus default "INACTIVE"
     var versionStatus = skuResult.versionStatus default "NOT_PROCESSED"
     var updateStatus = skuResult.updateStatus default "NOT_UPDATED"
-    var debugUpdateOutput = skuResult.debugUpdateOutput default "NOT_CAPTURED"
+   
 
     var errors = []
         ++ (if (isEmpty(event.eventId default "")) ["Missing eventId"] else [])
@@ -359,8 +467,12 @@ var results = events map (event) -> do {
         "REJECTED"
     else if (versionStatus == "IGNORED_STALE")
         "IGNORED_STALE"
-    else if (updateStatus == "UPDATED")
-        "ACCEPTED"
+    else if (
+    	updateStatus == "UPDATED" or
+    	updateStatus == "UPDATED_AFTER_RETRY" or
+    	updateStatus == "INSERTED"
+	)
+    	"ACCEPTED"
     else
         "REJECTED"
 
@@ -374,7 +486,6 @@ var results = events map (event) -> do {
         locationStatus: locationStatus,
         versionStatus: versionStatus,
         updateStatus: updateStatus,
-        debugUpdateOutput: debugUpdateOutput,
         valid: status == "ACCEPTED",
         status: status,
         errors: errors
