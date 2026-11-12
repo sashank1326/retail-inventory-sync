@@ -108,7 +108,7 @@ output application/json
 		<amqp:listener doc:name="Listener" doc:id="f68af73f-6e82-49c5-82ff-ae613dada477" config-ref="AMQP_Config" queueName="warehouse.inventory.queue" ackMode="MANUAL" numberOfConsumers="1" inboundEncoding="UTF-8" inboundContentType="application/json">
 			<amqp:listener-quality-of-service-config prefetchSize="0" prefetchCount="10" />
 		</amqp:listener>
-		<logger level="INFO" doc:name="Log Warehouse Inventory Event" doc:id="2f775e46-8540-480e-9486-fb5725d2d9d7" message='#["Warehouse received inventory event: " ++ write(payload, "application/json")]' category="com.retail.inventory.warehouse"/>
+		<logger level="INFO" doc:name="Log Warehouse Inventory Event" doc:id="2f775e46-8540-480e-9486-fb5725d2d9d7" message='#[%dw 2.0&#10;output application/java&#10;---&#10;"Correlation ID: " ++&#10;(attributes.properties.correlationId default "UNKNOWN") ++&#10;" | Warehouse received inventory event: " ++&#10;write(payload, "application/json")]' category="com.retail.inventory.warehouse"/>
 		<amqp:ack doc:name="Ack_Warehouse_Message" doc:id="ef1f0679-24b5-4588-b2b1-7224fb5aab45" ackId="#[attributes.ackId]"/>
 	</flow>
 	<flow name="inventory-api-console">
@@ -149,12 +149,14 @@ output application/json
 			<set-variable value="#[-1]" doc:name="Set Variable" doc:id="1d282129-5aa8-4107-b249-346f2e162a8c" variableName="updatedRows" />
 			<set-variable value='#[[]&#10;    ++ (if (isEmpty(vars.currentEvent.eventId default "")) ["Missing eventId"] else [])&#10;    ++ (if ((vars.currentEvent.eventVersion default 0) &lt;= 0) ["Invalid eventVersion"] else [])&#10;    ++ (if (isEmpty(vars.currentEvent.sku default "")) ["Missing SKU"] else [])&#10;    ++ (if (isEmpty(vars.currentEvent.locationCode default "")) ["Missing locationCode"] else [])&#10;    ++ (if ((vars.currentEvent.quantityOnHand default -1) &lt; 0) ["Negative on-hand quantity"] else [])&#10;    ++ (if ((vars.currentEvent.reservedQuantity default -1) &lt; 0) ["Negative reserved quantity"] else [])&#10;    ++ (if (&#10;        (vars.currentEvent.quantityOnHand default 0) -&#10;        (vars.currentEvent.reservedQuantity default 0) &lt; 0&#10;    ) ["Available quantity cannot be negative"] else [])&#10;    ++ (if (&#10;        !(["GOODS_RECEIPT", "GOODS_ISSUE", "SALE", "RETURN", "ADJUSTMENT"]&#10;        contains (vars.currentEvent.movementType default ""))&#10;    ) ["Invalid movement type"] else [])&#10;    ++ (if (isEmpty(vars.currentEvent.unitOfMeasure default "")) ["Missing unitOfMeasure"] else [])&#10;    ++ (if (isEmpty(vars.currentEvent.eventTimestamp default "")) ["Missing eventTimestamp"] else [])]' doc:name="Validate Basic Event" doc:id="2e49fbe9-f61d-4ccb-b8d9-11937a69fbd0" variableName="basicErrors" />
 			<set-variable value="NOT_PROCESSED" doc:name="Initialize Version Status" doc:id="20042215-42e0-4565-8f3f-26966eee60ab" variableName="versionStatus" />
-			<db:select doc:name="Check Product SKU" doc:id="c6c92a48-a271-4e39-be3a-db0448c85620" config-ref="Database_Config">
+			<until-successful maxRetries="2" doc:name="Until Successful" doc:id="a1c96632-c532-45bf-9200-e2bdc320e153" millisBetweenRetries="2000">
+				<db:select doc:name="Check Product SKU" doc:id="c6c92a48-a271-4e39-be3a-db0448c85620" config-ref="Database_Config">
 				<db:sql><![CDATA[SELECT sku, product_name, is_active
 FROM product_master
 WHERE sku = :sku;]]></db:sql>
 				<db:input-parameters><![CDATA[#[{ sku: vars.currentEvent.sku }]]]></db:input-parameters>
 			</db:select>
+			</until-successful>
 			<choice doc:name="Choice" doc:id="64ba6ba7-3533-4017-a576-14e9759f58fd">
 				<when expression="#[isEmpty(payload)]">
 					<set-variable value="UNKNOWN_SKU" doc:name="	Reject Unknown SKU" doc:id="d8d09c75-3e13-4213-98a8-7b8b8fa313de" variableName="	skuStatus" />
@@ -453,7 +455,8 @@ VALUES (
 			<set-variable value='#[%dw 2.0&#10;output application/java&#10;---&#10;if (&#10;    vars.updateStatus == "UPDATED" or&#10;    vars.updateStatus == "UPDATED_AFTER_RETRY" or&#10;    vars.updateStatus == "INSERTED"&#10;)&#10;    if (&#10;        (vars.currentEvent.quantityOnHand -&#10;         vars.currentEvent.reservedQuantity)&#10;        &lt;=&#10;        (vars.currentEvent.reorderPoint default 0)&#10;    )&#10;        "LOW_STOCK"&#10;    else&#10;        "NORMAL"&#10;else&#10;    "NOT_EVALUATED"]' doc:name="Calculate Low Stock" doc:id="587b26c4-55f2-4537-9d13-bed074045754" variableName="lowStockStatus" />
 			<set-variable value='#[%dw 2.0&#10;output application/java&#10;---&#10;(vars.skuResults default []) ++ [{&#10;    eventId: vars.currentEvent.eventId,&#10;    sku: vars.currentEvent.sku,&#10;    skuStatus: vars.skuStatus,&#10;    locationCode: vars.currentEvent.locationCode,&#10;    locationStatus: vars.locationStatus,&#10;    existingStock: vars.existingStock default [],&#10;    versionStatus: vars.versionStatus,&#10;    updateStatus: vars.updateStatus default "NOT_UPDATED",&#10;    updatedRows: vars.updatedRows default -1,&#10;    lowStockStatus: vars.lowStockStatus,&#10;    quantityOnHand: vars.currentEvent.quantityOnHand,&#10;    reservedQuantity: vars.currentEvent.reservedQuantity,&#10;    eventVersion: vars.currentEvent.eventVersion,&#10;    movementType: vars.currentEvent.movementType,&#10;    unitOfMeasure: vars.currentEvent.unitOfMeasure,&#10;    eventTimestamp: vars.currentEvent.eventTimestamp,&#10;    sourceSystem: vars.originalRequest.sourceSystem,&#10;    referenceDoc: vars.currentEvent.referenceDoc default null&#10;}]]' doc:name="skuResults" doc:id="6e127ce0-b59e-4fa1-8449-c1162c246d0f" variableName="skuResults" />
 		</foreach>
-		<amqp:publish doc:name="RabbitMQ_Config" doc:id="1ecbb0d2-40a6-4610-82a9-4b565fc2828f" config-ref="AMQP_Config" exchangeName="inventory.events" deliveryMode="PERSISTENT" sendCorrelationId="ALWAYS" routingKeys='#[["inventory.changed"]]'>
+		<until-successful maxRetries="2" doc:name="Until Successful" doc:id="438ac3ad-1c6d-4921-a6e2-116ea8c94db1" millisBetweenRetries="2000">
+			<amqp:publish doc:name="RabbitMQ_Config" doc:id="1ecbb0d2-40a6-4610-82a9-4b565fc2828f" config-ref="AMQP_Config" exchangeName="inventory.events" deliveryMode="PERSISTENT" sendCorrelationId="ALWAYS" routingKeys='#[["inventory.changed"]]'>
 			<amqp:message>
 				<amqp:body><![CDATA[#[%dw 2.0
 output application/json
@@ -466,6 +469,7 @@ output application/json
     )]]]></amqp:body>
 			</amqp:message>
 		</amqp:publish>
+		</until-successful>
 		<ee:transform doc:name="Transform Message">
             <ee:message>
                 <ee:set-payload><![CDATA[
